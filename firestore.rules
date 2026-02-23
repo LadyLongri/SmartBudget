@@ -1,0 +1,101 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function hasOnlyTransactionKeys(data) {
+      return data.keys().hasOnly([
+        "uid",
+        "type",
+        "amount",
+        "currency",
+        "categoryId",
+        "note",
+        "date",
+        "createdAt",
+        "updatedAt"
+      ]);
+    }
+
+    function hasOnlyCategoryKeys(data) {
+      return data.keys().hasOnly([
+        "uid",
+        "name",
+        "icon",
+        "color",
+        "createdAt",
+        "updatedAt"
+      ]);
+    }
+
+    function validOptionalStringField(data, field) {
+      return !data.keys().hasAny([field])
+        || data[field] == null
+        || data[field] is string;
+    }
+
+    function validOptionalTimestampField(data, field) {
+      return !data.keys().hasAny([field])
+        || data[field] is timestamp;
+    }
+
+    function validTransaction(data) {
+      return hasOnlyTransactionKeys(data)
+        && data.uid is string
+        && data.uid == request.auth.uid
+        && data.type in ["income", "expense"]
+        && data.amount is number
+        && data.amount > 0
+        && data.currency in ["USD", "CDF"]
+        && validOptionalStringField(data, "categoryId")
+        && validOptionalStringField(data, "note")
+        && data.date is timestamp
+        && validOptionalTimestampField(data, "createdAt")
+        && validOptionalTimestampField(data, "updatedAt");
+    }
+
+    function validCategory(data) {
+      return hasOnlyCategoryKeys(data)
+        && data.uid is string
+        && data.uid == request.auth.uid
+        && data.name is string
+        && data.name.size() >= 2
+        && data.name.size() <= 64
+        && validOptionalStringField(data, "icon")
+        && validOptionalStringField(data, "color")
+        && validOptionalTimestampField(data, "createdAt")
+        && validOptionalTimestampField(data, "updatedAt");
+    }
+
+    match /transactions/{transactionId} {
+      allow create: if isSignedIn() && validTransaction(request.resource.data);
+
+      allow read, delete: if isOwner(resource.data.uid);
+
+      allow update: if isOwner(resource.data.uid)
+        && request.resource.data.uid == resource.data.uid
+        && validTransaction(request.resource.data);
+    }
+
+    match /categories/{categoryId} {
+      allow create: if isSignedIn() && validCategory(request.resource.data);
+
+      allow read, delete: if isOwner(resource.data.uid);
+
+      allow update: if isOwner(resource.data.uid)
+        && request.resource.data.uid == resource.data.uid
+        && validCategory(request.resource.data);
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
