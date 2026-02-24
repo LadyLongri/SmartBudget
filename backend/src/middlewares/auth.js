@@ -1,4 +1,5 @@
 const { admin, isFirebaseReady } = require("../config/firebase");
+const { error } = require("../utils/api-response");
 
 /**
  * Firebase auth middleware.
@@ -9,17 +10,21 @@ module.exports = async function auth(req, res, next) {
   const match = header.match(/^Bearer (.+)$/);
 
   if (!match) {
-    return res.status(401).json({
-      error: "missing_token",
-      message: "Authorization: Bearer <Firebase ID token> is required.",
-    });
+    return error(
+      res,
+      "missing_token",
+      "Authorization: Bearer <Firebase ID token> is required.",
+      401,
+    );
   }
 
   if (!isFirebaseReady || !admin) {
-    return res.status(503).json({
-      error: "auth_unavailable",
-      message: "Firebase Admin is not configured on the server.",
-    });
+    return error(
+      res,
+      "auth_unavailable",
+      "Firebase Admin is not configured on the server.",
+      503,
+    );
   }
 
   try {
@@ -30,6 +35,6 @@ module.exports = async function auth(req, res, next) {
     };
     return next();
   } catch (_error) {
-    return res.status(401).json({ error: "invalid_token" });
+    return error(res, "invalid_token", "Firebase ID token is invalid.", 401);
   }
 };

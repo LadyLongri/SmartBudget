@@ -1,9 +1,21 @@
 const fs = require("fs");
 const path = require("path");
-const admin = require("firebase-admin");
 
+let admin = null;
 let db = null;
 let initialized = false;
+
+function envBool(name) {
+  const value = (process.env[name] || "").toLowerCase().trim();
+  return value === "1" || value === "true" || value === "yes";
+}
+
+function getAdminModule() {
+  if (!admin) {
+    admin = require("firebase-admin");
+  }
+  return admin;
+}
 
 function resolveServiceAccountPath() {
   if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
@@ -36,29 +48,41 @@ function resolveServiceAccountPath() {
 }
 
 function initFirebase() {
-  if (admin.apps.length) {
-    db = admin.firestore();
-    initialized = true;
+  if (envBool("FIREBASE_DISABLE_AUTO_INIT")) {
     return;
   }
 
   const serviceAccountPath = resolveServiceAccountPath();
+  const hasRuntimeCredentials = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+
+  // Avoid loading firebase-admin when no credentials are available.
+  if (!serviceAccountPath && !hasRuntimeCredentials) {
+    return;
+  }
+
+  const firebaseAdmin = getAdminModule();
+
+  if (firebaseAdmin.apps.length) {
+    db = firebaseAdmin.firestore();
+    initialized = true;
+    return;
+  }
 
   if (serviceAccountPath && fs.existsSync(serviceAccountPath)) {
     const raw = fs.readFileSync(serviceAccountPath, "utf8");
     const serviceAccount = JSON.parse(raw);
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
+    firebaseAdmin.initializeApp({
+      credential: firebaseAdmin.credential.cert(serviceAccount),
     });
-    db = admin.firestore();
+    db = firebaseAdmin.firestore();
     initialized = true;
     return;
   }
 
   // Support runtime credentials (for CI/hosting environments).
-  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    admin.initializeApp();
-    db = admin.firestore();
+  if (hasRuntimeCredentials) {
+    firebaseAdmin.initializeApp();
+    db = firebaseAdmin.firestore();
     initialized = true;
   }
 }

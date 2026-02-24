@@ -274,3 +274,114 @@ Variables d'environnement supportees:
 ---
 
 Si cette checklist est cochee integralement, le backend est pret pour un passage prod controle.
+
+## 9. Contrat API et nouveaux endpoints Stats
+
+### Contrat de reponse
+
+- succes: `{ "ok": true, "data": ... }`
+- erreur: `{ "error": "code", "message": "...", "details": ... }`
+
+### Endpoints Stats (auth requis)
+
+- `GET /stats/summary?month=YYYY-MM[&currency=USD]`
+- `GET /stats/by-category?month=YYYY-MM&currency=USD[&type=expense]`
+- `GET /stats/trend?month=YYYY-MM[&currency=USD][&granularity=day|week]`
+
+### Pagination cursor
+
+Routes listees:
+
+- `GET /transactions`
+- `GET /categories`
+
+Parametres:
+
+- `limit` (defaut 50, max 200)
+- `pageToken` (token opaque retourne par la page precedente)
+
+Format de reponse:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "items": [],
+    "pageInfo": {
+      "limit": 50,
+      "hasMore": false,
+      "nextPageToken": null
+    }
+  }
+}
+```
+
+### Validations renforcees transactions
+
+- `currency` limite a `USD|CDF`
+- `date` imposee en ISO datetime stricte (`YYYY-MM-DDTHH:mm:ss(.sss)?Z`)
+- `categoryId` verifiee (doit appartenir au `uid` authentifie)
+
+## 10. Mini guide migration Frontend (Flutter)
+
+### Changement de contrat
+
+Le backend retourne maintenant:
+
+- succes: `{ ok: true, data: ... }`
+- erreur: `{ error, message, details? }`
+
+Le client Flutter a ete adapte dans `lib/services/api_client.dart` pour extraire `data`.
+
+### Pagination transactions/categories
+
+Exemple logique UI:
+
+1. appeler la premiere page avec `limit`
+2. lire `pageInfo.nextPageToken`
+3. si `hasMore=true`, rappeler avec `pageToken`
+
+Exemple Dart:
+
+```dart
+String? token;
+bool hasMore = true;
+final all = <TransactionModel>[];
+
+while (hasMore) {
+  final page = await ApiClient.getTransactionsPage(
+    month: '2026-02',
+    limit: 50,
+    pageToken: token,
+  );
+
+  all.addAll(page['items'] as List<TransactionModel>);
+  final pageInfo = page['pageInfo'] as Map<String, dynamic>;
+  hasMore = pageInfo['hasMore'] == true;
+  token = pageInfo['nextPageToken'] as String?;
+}
+```
+
+### Stats dashboard
+
+Exemples:
+
+```dart
+final summary = await ApiClient.getStatsSummary(month: '2026-02', currency: 'USD');
+final byCategory = await ApiClient.getStatsByCategory(
+  month: '2026-02',
+  currency: 'USD',
+  type: 'expense',
+);
+final trend = await ApiClient.getStatsTrend(
+  month: '2026-02',
+  granularity: 'day',
+  currency: 'USD',
+);
+```
+
+Champs retour utilises typiquement pour le dashboard:
+
+- summary: `totalExpense`, `totalIncome`, `balance`, `transactionCount`
+- by-category: `items[{ categoryId, categoryName, total }]`
+- trend: `items[{ date, totalExpense, totalIncome }]`

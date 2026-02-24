@@ -70,6 +70,19 @@ class ApiClient {
         : response.body;
   }
 
+  static Map<String, dynamic> _unwrapDataMap(dynamic decoded) {
+    if (decoded is! Map<String, dynamic>) return <String, dynamic>{};
+    final dynamic data = decoded['data'];
+    if (data is Map<String, dynamic>) return data;
+    return decoded;
+  }
+
+  static List<Map<String, dynamic>> _extractItemMaps(dynamic source) {
+    final dynamic items = source is Map<String, dynamic> ? source['items'] : null;
+    if (items is! List<dynamic>) return <Map<String, dynamic>>[];
+    return items.whereType<Map<String, dynamic>>().toList();
+  }
+
   static Future<http.Response> _request({
     required String method,
     required Uri uri,
@@ -130,9 +143,7 @@ class ApiClient {
       uri: _uri(path, query),
       authorized: authorized,
     );
-    final dynamic decoded = _decode(response.body);
-    if (decoded is Map<String, dynamic>) return decoded;
-    return <String, dynamic>{};
+    return _unwrapDataMap(_decode(response.body));
   }
 
   static Future<Map<String, dynamic>> _postJsonMap(
@@ -146,9 +157,7 @@ class ApiClient {
       body: body,
       authorized: authorized,
     );
-    final dynamic decoded = _decode(response.body);
-    if (decoded is Map<String, dynamic>) return decoded;
-    return <String, dynamic>{};
+    return _unwrapDataMap(_decode(response.body));
   }
 
   static Future<Map<String, dynamic>> _patchJsonMap(
@@ -162,9 +171,7 @@ class ApiClient {
       body: body,
       authorized: authorized,
     );
-    final dynamic decoded = _decode(response.body);
-    if (decoded is Map<String, dynamic>) return decoded;
-    return <String, dynamic>{};
+    return _unwrapDataMap(_decode(response.body));
   }
 
   static Future<void> _deleteVoid(String path, {bool authorized = true}) async {
@@ -179,12 +186,13 @@ class ApiClient {
     return _getJsonMap('/me', authorized: true);
   }
 
-  static Future<List<TransactionModel>> getTransactions({
+  static Future<Map<String, dynamic>> getTransactionsPage({
     String? month,
     String? currency,
     String? type,
     String? categoryId,
     int limit = 100,
+    String? pageToken,
   }) async {
     final Map<String, String> query = {
       'limit': '$limit',
@@ -192,20 +200,45 @@ class ApiClient {
       if (currency != null && currency.isNotEmpty) 'currency': currency,
       if (type != null && type.isNotEmpty) 'type': type,
       if (categoryId != null && categoryId.isNotEmpty) 'categoryId': categoryId,
+      if (pageToken != null && pageToken.isNotEmpty) 'pageToken': pageToken,
     };
 
-    final Map<String, dynamic> json = await _getJsonMap(
+    final Map<String, dynamic> data = await _getJsonMap(
       '/transactions',
       query: query,
       authorized: true,
     );
 
-    final List<dynamic> items =
-        (json['items'] as List<dynamic>? ?? <dynamic>[]);
-    return items
-        .whereType<Map<String, dynamic>>()
-        .map(TransactionModel.fromJson)
-        .toList();
+    return {
+      'items': _extractItemMaps(data)
+          .map(TransactionModel.fromJson)
+          .toList(growable: false),
+      'pageInfo': data['pageInfo'] is Map<String, dynamic>
+          ? data['pageInfo'] as Map<String, dynamic>
+          : <String, dynamic>{},
+    };
+  }
+
+  static Future<List<TransactionModel>> getTransactions({
+    String? month,
+    String? currency,
+    String? type,
+    String? categoryId,
+    int limit = 100,
+    String? pageToken,
+  }) async {
+    final Map<String, dynamic> result = await getTransactionsPage(
+      month: month,
+      currency: currency,
+      type: type,
+      categoryId: categoryId,
+      limit: limit,
+      pageToken: pageToken,
+    );
+
+    final List<TransactionModel> items =
+        (result['items'] as List<TransactionModel>? ?? <TransactionModel>[]);
+    return items;
   }
 
   static Future<TransactionModel> createTransaction({
@@ -225,12 +258,12 @@ class ApiClient {
       if (categoryId != null && categoryId.isNotEmpty) 'categoryId': categoryId,
     };
 
-    final Map<String, dynamic> json = await _postJsonMap(
+    final Map<String, dynamic> data = await _postJsonMap(
       '/transactions',
       body: payload,
       authorized: true,
     );
-    return TransactionModel.fromJson(json);
+    return TransactionModel.fromJson(data);
   }
 
   static Future<TransactionModel> updateTransaction({
@@ -251,29 +284,55 @@ class ApiClient {
       'date': date?.toUtc().toIso8601String(),
     }..removeWhere((String _, dynamic value) => value == null);
 
-    final Map<String, dynamic> json = await _patchJsonMap(
+    final Map<String, dynamic> data = await _patchJsonMap(
       '/transactions/$id',
       body: payload,
       authorized: true,
     );
-    return TransactionModel.fromJson(json);
+    return TransactionModel.fromJson(data);
   }
 
   static Future<void> deleteTransaction(String id) {
     return _deleteVoid('/transactions/$id', authorized: true);
   }
 
-  static Future<List<CategoryModel>> getCategories() async {
-    final Map<String, dynamic> json = await _getJsonMap(
+  static Future<Map<String, dynamic>> getCategoriesPage({
+    int limit = 100,
+    String? pageToken,
+  }) async {
+    final Map<String, String> query = {
+      'limit': '$limit',
+      if (pageToken != null && pageToken.isNotEmpty) 'pageToken': pageToken,
+    };
+
+    final Map<String, dynamic> data = await _getJsonMap(
       '/categories',
+      query: query,
       authorized: true,
     );
-    final List<dynamic> items =
-        (json['items'] as List<dynamic>? ?? <dynamic>[]);
-    return items
-        .whereType<Map<String, dynamic>>()
-        .map(CategoryModel.fromJson)
-        .toList();
+
+    return {
+      'items': _extractItemMaps(data)
+          .map(CategoryModel.fromJson)
+          .toList(growable: false),
+      'pageInfo': data['pageInfo'] is Map<String, dynamic>
+          ? data['pageInfo'] as Map<String, dynamic>
+          : <String, dynamic>{},
+    };
+  }
+
+  static Future<List<CategoryModel>> getCategories({
+    int limit = 100,
+    String? pageToken,
+  }) async {
+    final Map<String, dynamic> result = await getCategoriesPage(
+      limit: limit,
+      pageToken: pageToken,
+    );
+
+    final List<CategoryModel> items =
+        (result['items'] as List<CategoryModel>? ?? <CategoryModel>[]);
+    return items;
   }
 
   static Future<CategoryModel> createCategory({
@@ -287,12 +346,12 @@ class ApiClient {
       if (color != null && color.isNotEmpty) 'color': color,
     };
 
-    final Map<String, dynamic> json = await _postJsonMap(
+    final Map<String, dynamic> data = await _postJsonMap(
       '/categories',
       body: payload,
       authorized: true,
     );
-    return CategoryModel.fromJson(json);
+    return CategoryModel.fromJson(data);
   }
 
   static Future<CategoryModel> updateCategory({
@@ -307,15 +366,61 @@ class ApiClient {
       'color': color,
     }..removeWhere((String _, dynamic value) => value == null);
 
-    final Map<String, dynamic> json = await _patchJsonMap(
+    final Map<String, dynamic> data = await _patchJsonMap(
       '/categories/$id',
       body: payload,
       authorized: true,
     );
-    return CategoryModel.fromJson(json);
+    return CategoryModel.fromJson(data);
   }
 
   static Future<void> deleteCategory(String id) {
     return _deleteVoid('/categories/$id', authorized: true);
+  }
+
+  static Future<Map<String, dynamic>> getStatsSummary({
+    required String month,
+    String? currency,
+  }) {
+    return _getJsonMap(
+      '/stats/summary',
+      query: {
+        'month': month,
+        if (currency != null && currency.isNotEmpty) 'currency': currency,
+      },
+      authorized: true,
+    );
+  }
+
+  static Future<Map<String, dynamic>> getStatsByCategory({
+    required String month,
+    required String currency,
+    String type = 'expense',
+  }) {
+    return _getJsonMap(
+      '/stats/by-category',
+      query: {
+        'month': month,
+        'currency': currency,
+        'type': type,
+      },
+      authorized: true,
+    );
+  }
+
+  static Future<Map<String, dynamic>> getStatsTrend({
+    required String month,
+    String granularity = 'day',
+    String? currency,
+  }) {
+    return _getJsonMap(
+      '/stats/trend',
+      query: {
+        'month': month,
+        'granularity': granularity,
+        if (currency != null && currency.isNotEmpty) 'currency': currency,
+      },
+      authorized: true,
+    );
   }
 }

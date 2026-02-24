@@ -1,33 +1,76 @@
 const express = require("express");
 const { admin, db, isFirebaseReady } = require("../config/firebase");
+const { success, error } = require("../utils/api-response");
+const { encodePageToken, decodePageToken } = require("../utils/pagination");
+const {
+  ALLOWED_CURRENCIES,
+  ALLOWED_TYPES,
+  isValidCurrency,
+  isValidType,
+  isValidMonth,
+  getMonthRange,
+  parseStrictIsoDate,
+} = require("../utils/validators");
 
 const router = express.Router();
 
 router.use((_req, res, next) => {
   if (!db || !admin || !isFirebaseReady) {
-    return res.status(503).json({
-      error: "database_unavailable",
-      message: "Firebase/Firestore is not configured on the server.",
-    });
+    return error(
+      res,
+      "database_unavailable",
+      "Firebase/Firestore is not configured on the server.",
+      503,
+    );
   }
   return next();
 });
 
-function isValidCurrency(value) {
-  return value === "USD" || value === "CDF";
+function sendServerError(res, routeError) {
+  console.error("transactions route error:", routeError);
+  return error(res, "server_error", "Unexpected server error.", 500);
 }
 
-function isValidType(value) {
-  return value === "income" || value === "expense";
+function parseLimit(rawLimit) {
+  const parsedLimit = rawLimit === undefined ? 50 : Number(rawLimit);
+  if (!Number.isInteger(parsedLimit) || parsedLimit < 1) {
+    return null;
+  }
+  return Math.min(parsedLimit, 200);
 }
 
-function isValidMonth(value) {
-  return /^\d{4}-(0[1-9]|1[0-2])$/.test(value);
+function parseTransactionToken(rawToken) {
+  const cursor = decodePageToken(rawToken);
+  if (!cursor || cursor.v !== 1) {
+    return null;
+  }
+  if (typeof cursor.id !== "string") {
+    return null;
+  }
+  return cursor;
 }
 
-function sendServerError(res, error) {
-  console.error("transactions route error:", error);
-  return res.status(500).json({ error: "server_error" });
+async function validateCategoryOwnership(uid, categoryId) {
+  if (categoryId === null) {
+    return { valid: true, normalized: null };
+  }
+
+  if (typeof categoryId !== "string" || !categoryId.trim()) {
+    return { valid: false };
+  }
+
+  const normalized = categoryId.trim();
+  const categoryDoc = await db.collection("categories").doc(normalized).get();
+  if (!categoryDoc.exists) {
+    return { valid: false };
+  }
+
+  const categoryData = categoryDoc.data();
+  if (!categoryData || categoryData.uid !== uid) {
+    return { valid: false };
+  }
+
+  return { valid: true, normalized };
 }
 
 router.post("/", async (req, res) => {
@@ -36,27 +79,48 @@ router.post("/", async (req, res) => {
     const { type, amount, currency, categoryId = null, note = "", date } = req.body;
 
     if (!isValidType(type)) {
-      return res.status(400).json({
-        error: "invalid_type",
-        expected: ["income", "expense"],
-      });
+      return error(
+        res,
+        "invalid_type",
+        "Transaction type must be one of the supported values.",
+        400,
+        { expected: ALLOWED_TYPES },
+      );
     }
 
     const numAmount = Number(amount);
     if (!Number.isFinite(numAmount) || numAmount <= 0) {
-      return res.status(400).json({ error: "invalid_amount" });
+      return error(res, "invalid_amount", "Amount must be a positive number.", 400);
     }
 
     if (!isValidCurrency(currency)) {
-      return res.status(400).json({
-        error: "invalid_currency",
-        expected: ["USD", "CDF"],
-      });
+      return error(
+        res,
+        "invalid_currency",
+        "Currency must be one of the supported values.",
+        400,
+        { expected: ALLOWED_CURRENCIES },
+      );
     }
 
-    const parsedDate = date ? new Date(date) : new Date();
-    if (Number.isNaN(parsedDate.getTime())) {
-      return res.status(400).json({ error: "invalid_date" });
+    const parsedDate = date === undefined ? new Date() : parseStrictIsoDate(date);
+    if (!parsedDate) {
+      return error(
+        res,
+        "invalid_date",
+        "Date must be an ISO-8601 datetime string (example: 2026-02-24T12:00:00Z).",
+        400,
+      );
+    }
+
+    const categoryValidation = await validateCategoryOwnership(uid, categoryId);
+    if (!categoryValidation.valid) {
+      return error(
+        res,
+        "invalid_category",
+        "categoryId must reference a category owned by the authenticated user.",
+        400,
+      );
     }
 
     const doc = {
@@ -64,7 +128,7 @@ router.post("/", async (req, res) => {
       type,
       amount: numAmount,
       currency,
-      categoryId,
+      categoryId: categoryValidation.normalized,
       note: String(note),
       date: admin.firestore.Timestamp.fromDate(parsedDate),
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -72,41 +136,50 @@ router.post("/", async (req, res) => {
     };
 
     const ref = await db.collection("transactions").add(doc);
-    return res.status(201).json({ id: ref.id, ...doc });
-  } catch (error) {
-    return sendServerError(res, error);
+    return success(res, { id: ref.id, ...doc }, 201);
+  } catch (routeError) {
+    return sendServerError(res, routeError);
   }
 });
 
 router.get("/", async (req, res) => {
   try {
     const uid = req.user.uid;
-    const { month, currency, type, categoryId, limit } = req.query;
+    const { month, currency, type, categoryId, limit, pageToken } = req.query;
 
     if (currency && !isValidCurrency(currency)) {
-      return res.status(400).json({
-        error: "invalid_currency",
-        expected: ["USD", "CDF"],
-      });
+      return error(
+        res,
+        "invalid_currency",
+        "Currency must be one of the supported values.",
+        400,
+        { expected: ALLOWED_CURRENCIES },
+      );
     }
 
     if (type && !isValidType(type)) {
-      return res.status(400).json({
-        error: "invalid_type",
-        expected: ["income", "expense"],
-      });
+      return error(
+        res,
+        "invalid_type",
+        "Transaction type must be one of the supported values.",
+        400,
+        { expected: ALLOWED_TYPES },
+      );
     }
 
     if (month && !isValidMonth(month)) {
-      return res.status(400).json({
-        error: "invalid_month",
-        example: "2026-02",
-      });
+      return error(
+        res,
+        "invalid_month",
+        "Month must use YYYY-MM format.",
+        400,
+        { example: "2026-02" },
+      );
     }
 
-    const parsedLimit = limit === undefined ? 50 : Number(limit);
-    if (!Number.isInteger(parsedLimit) || parsedLimit < 1) {
-      return res.status(400).json({ error: "invalid_limit" });
+    const parsedLimit = parseLimit(limit);
+    if (!parsedLimit) {
+      return error(res, "invalid_limit", "Limit must be an integer >= 1.", 400);
     }
 
     let query = db.collection("transactions").where("uid", "==", uid);
@@ -116,23 +189,62 @@ router.get("/", async (req, res) => {
     if (categoryId) query = query.where("categoryId", "==", categoryId);
 
     if (month) {
-      const start = new Date(`${month}-01T00:00:00.000Z`);
-      const end = new Date(start);
-      end.setUTCMonth(end.getUTCMonth() + 1);
-
+      const { start, end } = getMonthRange(month);
       query = query
         .where("date", ">=", admin.firestore.Timestamp.fromDate(start))
         .where("date", "<", admin.firestore.Timestamp.fromDate(end));
     }
 
-    query = query.orderBy("date", "desc").limit(Math.min(parsedLimit, 200));
+    query = query
+      .orderBy("date", "desc")
+      .limit(parsedLimit + 1);
+
+    if (pageToken) {
+      const cursor = parseTransactionToken(pageToken);
+      if (!cursor) {
+        return error(
+          res,
+          "invalid_page_token",
+          "Page token is invalid or expired.",
+          400,
+        );
+      }
+
+      const cursorDoc = await db.collection("transactions").doc(cursor.id).get();
+      if (!cursorDoc.exists || cursorDoc.data()?.uid !== uid) {
+        return error(
+          res,
+          "invalid_page_token",
+          "Page token is invalid or expired.",
+          400,
+        );
+      }
+
+      query = query.startAfter(cursorDoc);
+    }
 
     const snap = await query.get();
-    const items = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    const hasMore = snap.docs.length > parsedLimit;
+    const docs = hasMore ? snap.docs.slice(0, parsedLimit) : snap.docs;
+    const items = docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 
-    return res.json({ items });
-  } catch (error) {
-    return sendServerError(res, error);
+    const nextPageToken = hasMore
+      ? encodePageToken({
+          v: 1,
+          id: docs[docs.length - 1].id,
+        })
+      : null;
+
+    return success(res, {
+      items,
+      pageInfo: {
+        limit: parsedLimit,
+        hasMore,
+        nextPageToken,
+      },
+    });
+  } catch (routeError) {
+    return sendServerError(res, routeError);
   }
 });
 
@@ -142,14 +254,18 @@ router.get("/:id", async (req, res) => {
     const id = req.params.id;
 
     const doc = await db.collection("transactions").doc(id).get();
-    if (!doc.exists) return res.status(404).json({ error: "not_found" });
+    if (!doc.exists) {
+      return error(res, "not_found", "Transaction not found.", 404);
+    }
 
     const data = doc.data();
-    if (data.uid !== uid) return res.status(403).json({ error: "forbidden" });
+    if (data.uid !== uid) {
+      return error(res, "forbidden", "You cannot access this transaction.", 403);
+    }
 
-    return res.json({ id: doc.id, ...data });
-  } catch (error) {
-    return sendServerError(res, error);
+    return success(res, { id: doc.id, ...data });
+  } catch (routeError) {
+    return sendServerError(res, routeError);
   }
 });
 
@@ -160,52 +276,93 @@ router.patch("/:id", async (req, res) => {
     const ref = db.collection("transactions").doc(id);
     const doc = await ref.get();
 
-    if (!doc.exists) return res.status(404).json({ error: "not_found" });
+    if (!doc.exists) {
+      return error(res, "not_found", "Transaction not found.", 404);
+    }
 
     const current = doc.data();
-    if (current.uid !== uid) return res.status(403).json({ error: "forbidden" });
+    if (current.uid !== uid) {
+      return error(res, "forbidden", "You cannot update this transaction.", 403);
+    }
 
     const patch = {};
     const { type, amount, currency, categoryId, note, date } = req.body;
 
     if (type !== undefined) {
-      if (!isValidType(type)) return res.status(400).json({ error: "invalid_type" });
+      if (!isValidType(type)) {
+        return error(
+          res,
+          "invalid_type",
+          "Transaction type must be one of the supported values.",
+          400,
+          { expected: ALLOWED_TYPES },
+        );
+      }
       patch.type = type;
     }
 
     if (amount !== undefined) {
       const numAmount = Number(amount);
       if (!Number.isFinite(numAmount) || numAmount <= 0) {
-        return res.status(400).json({ error: "invalid_amount" });
+        return error(res, "invalid_amount", "Amount must be a positive number.", 400);
       }
       patch.amount = numAmount;
     }
 
     if (currency !== undefined) {
       if (!isValidCurrency(currency)) {
-        return res.status(400).json({ error: "invalid_currency" });
+        return error(
+          res,
+          "invalid_currency",
+          "Currency must be one of the supported values.",
+          400,
+          { expected: ALLOWED_CURRENCIES },
+        );
       }
       patch.currency = currency;
     }
 
-    if (categoryId !== undefined) patch.categoryId = categoryId;
-    if (note !== undefined) patch.note = String(note);
+    if (categoryId !== undefined) {
+      const categoryValidation = await validateCategoryOwnership(uid, categoryId);
+      if (!categoryValidation.valid) {
+        return error(
+          res,
+          "invalid_category",
+          "categoryId must reference a category owned by the authenticated user.",
+          400,
+        );
+      }
+      patch.categoryId = categoryValidation.normalized;
+    }
+
+    if (note !== undefined) {
+      patch.note = String(note);
+    }
 
     if (date !== undefined) {
-      const parsedDate = new Date(date);
-      if (Number.isNaN(parsedDate.getTime())) {
-        return res.status(400).json({ error: "invalid_date" });
+      const parsedDate = parseStrictIsoDate(date);
+      if (!parsedDate) {
+        return error(
+          res,
+          "invalid_date",
+          "Date must be an ISO-8601 datetime string (example: 2026-02-24T12:00:00Z).",
+          400,
+        );
       }
       patch.date = admin.firestore.Timestamp.fromDate(parsedDate);
+    }
+
+    if (!Object.keys(patch).length) {
+      return error(res, "invalid_patch", "No updatable transaction fields provided.", 400);
     }
 
     patch.updatedAt = admin.firestore.FieldValue.serverTimestamp();
 
     await ref.update(patch);
     const updated = await ref.get();
-    return res.json({ id, ...updated.data() });
-  } catch (error) {
-    return sendServerError(res, error);
+    return success(res, { id, ...updated.data() });
+  } catch (routeError) {
+    return sendServerError(res, routeError);
   }
 });
 
@@ -216,15 +373,19 @@ router.delete("/:id", async (req, res) => {
     const ref = db.collection("transactions").doc(id);
     const doc = await ref.get();
 
-    if (!doc.exists) return res.status(404).json({ error: "not_found" });
+    if (!doc.exists) {
+      return error(res, "not_found", "Transaction not found.", 404);
+    }
 
     const data = doc.data();
-    if (data.uid !== uid) return res.status(403).json({ error: "forbidden" });
+    if (data.uid !== uid) {
+      return error(res, "forbidden", "You cannot delete this transaction.", 403);
+    }
 
     await ref.delete();
-    return res.json({ ok: true, id });
-  } catch (error) {
-    return sendServerError(res, error);
+    return success(res, { id, deleted: true });
+  } catch (routeError) {
+    return sendServerError(res, routeError);
   }
 });
 

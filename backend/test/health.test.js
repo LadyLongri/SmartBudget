@@ -1,5 +1,8 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
+
+process.env.FIREBASE_DISABLE_AUTO_INIT = "1";
+
 const app = require("../index");
 
 test("GET /health returns ok", async (t) => {
@@ -14,7 +17,7 @@ test("GET /health returns ok", async (t) => {
 
   assert.equal(response.status, 200);
   assert.equal(body.ok, true);
-  assert.equal(typeof body.firebaseReady, "boolean");
+  assert.equal(typeof body.data.firebaseReady, "boolean");
 });
 
 test("GET /me without token returns 401", async (t) => {
@@ -29,4 +32,5 @@ test("GET /me without token returns 401", async (t) => {
 
   assert.equal(response.status, 401);
   assert.equal(body.error, "missing_token");
+  assert.equal(typeof body.message, "string");
 });

@@ -1,7 +1,19 @@
-const fs = require("fs");
-const path = require("path");
-const nodeFetch = require("node-fetch"); // <-- stable for local HTTP on Windows
-const { admin, isFirebaseReady } = require("../src/config/firebase");
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import firebaseConfig from "../src/config/firebase.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+async function getFetch() {
+  if (typeof globalThis.fetch === "function") {
+    return globalThis.fetch.bind(globalThis);
+  }
+
+  const module = await import("node-fetch");
+  return module.default;
+}
 
 function parseArgs(argv) {
   const options = {
@@ -59,21 +71,21 @@ function readApiKeyFromFlutterConfig() {
   if (!fs.existsSync(filePath)) return null;
 
   const content = fs.readFileSync(filePath, "utf8");
-  const webBlockMatch = content.match(
-    /static const FirebaseOptions web[\s\S]*?apiKey:\s*'([^']+)'/,
+  const webBlockMatch = /static const FirebaseOptions web[\s\S]*?apiKey:\s*'([^']+)'/.exec(
+    content,
   );
-  if (webBlockMatch && webBlockMatch[1]) return webBlockMatch[1];
+  if (webBlockMatch?.[1]) return webBlockMatch[1];
 
-  const firstKeyMatch = content.match(/apiKey:\s*'([^']+)'/);
-  return firstKeyMatch && firstKeyMatch[1] ? firstKeyMatch[1] : null;
+  const firstKeyMatch = /apiKey:\s*'([^']+)'/.exec(content);
+  return firstKeyMatch?.[1] ?? null;
 }
 
-// Use global fetch for Google Identity Toolkit (internet) — it already worked for you.
+// Use global fetch for Google Identity Toolkit (internet) - it already worked for you.
 async function identityToolkitCall(endpoint, apiKey, payload) {
   const url = `https://identitytoolkit.googleapis.com/v1/${endpoint}?key=${apiKey}`;
 
-  // If your Node doesn't have global fetch, fallback to nodeFetch.
-  const f = typeof fetch === "function" ? fetch : nodeFetch;
+  // If your Node doesn't have global fetch, fallback to node-fetch.
+  const f = await getFetch();
 
   const response = await f(url, {
     method: "POST",
@@ -110,6 +122,8 @@ async function getTokenByPassword(apiKey, email, password) {
 
 async function getTokenByCustomToken(apiKey, uid) {
   if (!uid) throw new Error("Missing --uid for custom token login.");
+  const { admin, isFirebaseReady } = firebaseConfig;
+
   if (!isFirebaseReady || !admin) {
     throw new Error(
       "Firebase Admin not ready. Set FIREBASE_SERVICE_ACCOUNT_PATH or GOOGLE_APPLICATION_CREDENTIALS.",
@@ -130,19 +144,29 @@ async function getTokenByCustomToken(apiKey, uid) {
   };
 }
 
-// Use nodeFetch for local API calls — avoids Windows undici crash
+// Use nodeFetch for local API calls - avoids Windows undici crash
 async function apiGet(url, token) {
+  const f = await getFetch();
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const response = await nodeFetch(url, { method: "GET", headers });
+  const response = await f(url, { method: "GET", headers });
 
   const text = await response.text();
   let body = null;
   try {
     body = text ? JSON.parse(text) : null;
-  } catch (_) {
+  } catch (parseError) {
+    const message = parseError instanceof Error ? parseError.message : String(parseError);
+    console.warn(`Non-JSON response from ${url}: ${message}`);
     body = text;
   }
   return { status: response.status, body };
+}
+
+function unwrapData(body) {
+  if (typeof body?.data === "object" && body.data !== null) {
+    return body.data;
+  }
+  return body;
 }
 
 async function main() {
@@ -183,23 +207,27 @@ async function main() {
   const me = await apiGet(`${baseUrl}/me`, authResult.idToken);
   const categories = await apiGet(`${baseUrl}/categories`, authResult.idToken);
   const transactions = await apiGet(`${baseUrl}/transactions?limit=5`, authResult.idToken);
+  const categoriesData = unwrapData(categories.body);
+  const transactionsData = unwrapData(transactions.body);
 
   console.log(`GET /health -> ${health.status} ${JSON.stringify(health.body)}`);
   console.log(`GET /me -> ${me.status} ${JSON.stringify(me.body)}`);
   console.log(
     `GET /categories -> ${categories.status} count=${
-      Array.isArray(categories.body?.items) ? categories.body.items.length : "n/a"
+      Array.isArray(categoriesData?.items) ? categoriesData.items.length : "n/a"
     }`,
   );
   console.log(
     `GET /transactions?limit=5 -> ${transactions.status} count=${
-      Array.isArray(transactions.body?.items) ? transactions.body.items.length : "n/a"
+      Array.isArray(transactionsData?.items) ? transactionsData.items.length : "n/a"
     }`,
   );
 }
 
-main().catch((error) => {
+try {
+  await main();
+} catch (error) {
   // Avoid hard crashing the event loop
   console.error("API smoke failed:", error?.message || error);
   process.exitCode = 1;
-});
+}
