@@ -1,5 +1,15 @@
 # SmartBudget Frontend (Flutter)
 
+## 0) Mise a jour recente (2026-02-25)
+- Scope final non-iOS execute:
+  - filtres stats 7j/30j/90j/12m/Tout/Custom
+  - export CSV transactions (copie presse-papiers)
+  - options categories/sources etendues (revenus/depenses separes)
+  - demarcation couleur fixe par categorie de depense
+  - sync cloud amelioree avec priorite local si plus recent
+- Branche de travail: `feature/frontend-cloud-stats-final`
+- Merge effectue via PR vers `main`.
+
 ## 1) Objectif
 Ce frontend Flutter fournit une application de gestion budgetaire mobile/desktop avec:
 - onboarding visuel,
