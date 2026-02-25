@@ -37,6 +37,7 @@ flutter run --dart-define=API_BASE_URL=http://localhost:3000
 - Backend: `backend/README-BACKEND.md`
 - Frontend: `README-FRONTEND.md`
 - Feature Developer (livraison metier): `README-FEATURE-DEVELOPER.md`
+- Quality Engineer (tests/checklist/bugs/DoD): `README-QA.md`
 
 ## Commandes utiles backend
 
