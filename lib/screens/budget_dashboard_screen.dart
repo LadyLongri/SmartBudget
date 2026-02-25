@@ -8,6 +8,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/stats_models.dart';
+import '../models/transaction_model.dart';
+import '../services/dashboard_feature_service.dart';
+import '../widgets/feature_state_banner.dart';
 import 'auth_screen.dart';
 
 class BudgetDashboardScreen extends StatefulWidget {
@@ -460,6 +464,8 @@ class _Palette {
   Color get glow => accent.withValues(alpha: 0.25 + (0.35 * glowLevel));
 }
 
+enum _ApiDashboardState { idle, loading, success, empty, error }
+
 class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
     with SingleTickerProviderStateMixin {
   static const List<String> _expenseCategories = <String>[
@@ -654,6 +660,16 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
   DateTime? _localUpdatedAt;
   String _statsPeriod = '30j';
   DateTimeRange? _customStatsRange;
+  _ApiDashboardState _apiState = _ApiDashboardState.idle;
+  String? _apiErrorMessage;
+  String _apiMonth =
+      '${DateTime.now().year.toString().padLeft(4, '0')}-${DateTime.now().month.toString().padLeft(2, '0')}';
+  String _apiCurrency = 'USD';
+  StatsSummaryModel? _apiSummary;
+  List<CategoryStatItemModel> _apiCategoryItems = <CategoryStatItemModel>[];
+  List<StatsTrendPointModel> _apiTrendItems = <StatsTrendPointModel>[];
+  List<TransactionModel> _apiTransactions = <TransactionModel>[];
+  Map<String, String> _apiCategoryNameById = <String, String>{};
 
   double _budgetTotal = 0;
   double _visaBalance = 0;
@@ -711,12 +727,14 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
     ),
   ];
   late final AnimationController _entryController;
+  late final DashboardFeatureService _featureService;
   StreamSubscription<User?>? _authSub;
   Timer? _saveDebounce;
 
   @override
   void initState() {
     super.initState();
+    _featureService = DashboardFeatureService();
     _loadLocalData();
     _entryController = AnimationController(
       vsync: this,
@@ -724,8 +742,10 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
     )..forward();
     _authSub = FirebaseAuth.instance.authStateChanges().listen((_) {
       _loadCloudData();
+      _loadApiDashboard();
     });
     _loadCloudData();
+    _loadApiDashboard();
   }
 
   @override
@@ -820,19 +840,134 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
       .where((_BudgetTx tx) => _inActiveStatsRange(tx.date))
       .toList(growable: false);
 
-  double get _statsExpenses => _statsTransactions
-      .where((_BudgetTx tx) => tx.isExpense)
-      .fold<double>(0, (double s, _BudgetTx t) => s + t.amount);
+  double get _statsExpenses {
+    if ((_apiState == _ApiDashboardState.success ||
+            _apiState == _ApiDashboardState.empty) &&
+        _apiSummary != null) {
+      return _apiSummary!.totalExpense;
+    }
+    return _statsTransactions
+        .where((_BudgetTx tx) => tx.isExpense)
+        .fold<double>(0, (double s, _BudgetTx t) => s + t.amount);
+  }
 
-  double get _statsIncomes => _statsTransactions
-      .where((_BudgetTx tx) => !tx.isExpense)
-      .fold<double>(0, (double s, _BudgetTx t) => s + t.amount);
+  double get _statsIncomes {
+    if ((_apiState == _ApiDashboardState.success ||
+            _apiState == _ApiDashboardState.empty) &&
+        _apiSummary != null) {
+      return _apiSummary!.totalIncome;
+    }
+    return _statsTransactions
+        .where((_BudgetTx tx) => !tx.isExpense)
+        .fold<double>(0, (double s, _BudgetTx t) => s + t.amount);
+  }
 
   String get _statsPeriodLabel {
     if (_statsPeriod != 'Custom') return _statsPeriod;
     final DateTimeRange? range = _customStatsRange;
     if (range == null) return 'Custom';
     return '${_formatDate(range.start)} - ${_formatDate(range.end)}';
+  }
+
+  List<String> _apiMonthOptions() {
+    final DateTime now = DateTime.now();
+    final List<String> values = <String>[];
+    for (int i = 0; i < 12; i++) {
+      final DateTime d = DateTime(now.year, now.month - i, 1);
+      final String month =
+          '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}';
+      values.add(month);
+    }
+    if (!values.contains(_apiMonth)) {
+      values.add(_apiMonth);
+    }
+    return values;
+  }
+
+  Future<void> _loadApiDashboard() async {
+    final User? user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      if (!mounted) return;
+      setState(() {
+        _apiState = _ApiDashboardState.idle;
+        _apiErrorMessage = null;
+      });
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _apiState = _ApiDashboardState.loading;
+      _apiErrorMessage = null;
+    });
+
+    try {
+      final DashboardFeatureSnapshot snapshot = await _featureService.fetch(
+        month: _apiMonth,
+        currency: _apiCurrency,
+        granularity: _monthlyView ? 'week' : 'day',
+      );
+      if (!mounted) return;
+      setState(() {
+        _apiSummary = snapshot.summary;
+        _apiCategoryItems = snapshot.byCategory;
+        _apiTrendItems = snapshot.trend;
+        _apiTransactions = snapshot.transactions;
+        _apiCategoryNameById = snapshot.categoryNameById;
+        _apiState = snapshot.isEmpty
+            ? _ApiDashboardState.empty
+            : _ApiDashboardState.success;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _apiState = _ApiDashboardState.error;
+        _apiErrorMessage = '$error';
+      });
+    }
+  }
+
+  Map<String, double> get _apiCategoryTotals {
+    final Map<String, double> totals = <String, double>{
+      for (final String c in _expenseCategories) c: 0,
+    };
+    for (final CategoryStatItemModel item in _apiCategoryItems) {
+      totals[item.categoryName] = item.total;
+    }
+    return totals;
+  }
+
+  Map<String, int> get _apiCategoryColors {
+    final Map<String, int> colors = <String, int>{
+      for (final String c in _expenseCategories)
+        c: _defaultColorForCategory(c, isExpense: true),
+    };
+    for (final CategoryStatItemModel item in _apiCategoryItems) {
+      colors[item.categoryName] = _defaultColorForCategory(
+        item.categoryName,
+        isExpense: true,
+      );
+    }
+    return colors;
+  }
+
+  List<double> get _apiTrendExpenses {
+    if (_apiTrendItems.isEmpty) return _trendExpenses;
+    return _apiTrendItems
+        .map((StatsTrendPointModel p) => p.totalExpense)
+        .toList(growable: false);
+  }
+
+  List<double> get _apiTrendIncomes {
+    if (_apiTrendItems.isEmpty) return _trendIncomes;
+    return _apiTrendItems
+        .map((StatsTrendPointModel p) => p.totalIncome)
+        .toList(growable: false);
+  }
+
+  String _apiCategoryLabel(String? categoryId) {
+    if (categoryId == null || categoryId.isEmpty) return 'Sans categorie';
+    return _apiCategoryNameById[categoryId] ?? categoryId;
   }
 
   int _defaultColorForCategory(String category, {required bool isExpense}) {
@@ -843,6 +978,11 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
   }
 
   Map<String, double> get _categoryTotals {
+    if ((_apiState == _ApiDashboardState.success ||
+            _apiState == _ApiDashboardState.empty) &&
+        _apiSummary != null) {
+      return _apiCategoryTotals;
+    }
     final Map<String, double> out = <String, double>{
       for (final String c in _expenseCategories) c: 0,
     };
@@ -854,6 +994,11 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
   }
 
   List<double> get _trendExpenses {
+    if ((_apiState == _ApiDashboardState.success ||
+            _apiState == _ApiDashboardState.empty) &&
+        _apiTrendItems.isNotEmpty) {
+      return _apiTrendExpenses;
+    }
     final int count = _monthlyView ? 6 : 7;
     final List<double> values = List<double>.filled(count, 0);
     for (final _BudgetTx tx in _statsTransactions) {
@@ -867,6 +1012,11 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
   }
 
   List<double> get _trendIncomes {
+    if ((_apiState == _ApiDashboardState.success ||
+            _apiState == _ApiDashboardState.empty) &&
+        _apiTrendItems.isNotEmpty) {
+      return _apiTrendIncomes;
+    }
     final int count = _monthlyView ? 6 : 7;
     final List<double> values = List<double>.filled(count, 0);
     for (final _BudgetTx tx in _statsTransactions) {
@@ -880,6 +1030,17 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
   }
 
   List<int> get _trendColors {
+    if ((_apiState == _ApiDashboardState.success ||
+            _apiState == _ApiDashboardState.empty) &&
+        _apiTrendItems.isNotEmpty) {
+      return _apiTrendItems
+          .map((StatsTrendPointModel p) {
+            if (p.totalExpense > p.totalIncome) return 0xFFE65B5B;
+            if (p.totalIncome > 0) return 0xFF2DB177;
+            return _accentValue;
+          })
+          .toList(growable: false);
+    }
     final int count = _monthlyView ? 6 : 7;
     final List<int> values = List<int>.filled(count, _accentValue);
     for (final _BudgetTx tx in _statsTransactions) {
@@ -893,6 +1054,11 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
   }
 
   Map<String, int> get _categoryColors {
+    if ((_apiState == _ApiDashboardState.success ||
+            _apiState == _ApiDashboardState.empty) &&
+        _apiSummary != null) {
+      return _apiCategoryColors;
+    }
     final Map<String, int> values = <String, int>{
       for (final String category in _expenseCategories)
         category: _defaultColorForCategory(category, isExpense: true),
@@ -1126,6 +1292,8 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
         'statsPeriod': _statsPeriod,
         'customStatsStart': _customStatsRange?.start.toIso8601String(),
         'customStatsEnd': _customStatsRange?.end.toIso8601String(),
+        'apiMonth': _apiMonth,
+        'apiCurrency': _apiCurrency,
       },
     };
     if (includeServerTimestamp) {
@@ -1173,6 +1341,15 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
     _customStatsRange = (customStart != null && customEnd != null)
         ? DateTimeRange(start: customStart, end: customEnd)
         : null;
+    final String? savedApiMonth = settings['apiMonth'] as String?;
+    if (savedApiMonth != null &&
+        RegExp(r'^\d{4}\-\d{2}$').hasMatch(savedApiMonth)) {
+      _apiMonth = savedApiMonth;
+    }
+    final String? savedApiCurrency = settings['apiCurrency'] as String?;
+    if (savedApiCurrency != null && savedApiCurrency.isNotEmpty) {
+      _apiCurrency = savedApiCurrency;
+    }
     _localUpdatedAt = _parseUpdatedAt(data['updatedAt']) ?? _localUpdatedAt;
     _transactions
       ..clear()
@@ -1207,6 +1384,7 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
         _loadingCloud = false;
         _syncMessage = 'Sauvegarde locale chargee';
       });
+      _loadApiDashboard();
     } catch (_) {
       // Ignore local decode errors and keep defaults.
     }
@@ -1305,6 +1483,7 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
         _syncMessage = 'Cloud synchronise a ${_formatHourMinute(_lastCloudSyncAt!)}';
       });
       await _saveLocalData();
+      _loadApiDashboard();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -2423,8 +2602,58 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
                     selected: <bool>{_monthlyView},
                     onSelectionChanged: (Set<bool> set) {
                       setState(() => _monthlyView = set.first);
+                      _loadApiDashboard();
                       _queueSave();
                     },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      initialValue: _apiMonth,
+                      decoration: const InputDecoration(labelText: 'Mois API'),
+                      items: _apiMonthOptions()
+                          .map(
+                            (String month) => DropdownMenuItem<String>(
+                              value: month,
+                              child: Text(month),
+                            ),
+                          )
+                          .toList(growable: false),
+                      onChanged: (String? value) {
+                        if (value == null) return;
+                        setState(() => _apiMonth = value);
+                        _loadApiDashboard();
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      initialValue: _apiCurrency,
+                      decoration: const InputDecoration(labelText: 'Devise API'),
+                      items: const <DropdownMenuItem<String>>[
+                        DropdownMenuItem<String>(value: 'USD', child: Text('USD')),
+                        DropdownMenuItem<String>(value: 'CDF', child: Text('CDF')),
+                        DropdownMenuItem<String>(value: 'EUR', child: Text('EUR')),
+                      ],
+                      onChanged: (String? value) {
+                        if (value == null) return;
+                        setState(() => _apiCurrency = value);
+                        _loadApiDashboard();
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.filledTonal(
+                    onPressed: _apiState == _ApiDashboardState.loading
+                        ? null
+                        : _loadApiDashboard,
+                    icon: const Icon(Icons.sync_rounded),
+                    tooltip: 'Recharger API',
                   ),
                 ],
               ),
@@ -2460,6 +2689,67 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen>
             ],
           ),
         ),
+        const SizedBox(height: 12),
+        if (_apiState == _ApiDashboardState.idle)
+          _glass(
+            p,
+            const FeatureStateBanner(
+              stateLabel: 'API',
+              message: 'Connecte-toi pour charger les donnees API backend.',
+              icon: Icons.cloud_off_rounded,
+            ),
+          ),
+        if (_apiState == _ApiDashboardState.loading)
+          _glass(
+            p,
+            const FeatureStateBanner(
+              stateLabel: 'API',
+              message: 'Chargement des statistiques API...',
+              icon: Icons.sync_rounded,
+            ),
+          ),
+        if (_apiState == _ApiDashboardState.error)
+          _glass(
+            p,
+            FeatureStateBanner(
+              stateLabel: 'Erreur API',
+              message: _apiErrorMessage ?? 'Erreur API',
+              icon: Icons.error_outline_rounded,
+              onRetry: _loadApiDashboard,
+            ),
+          ),
+        if (_apiState == _ApiDashboardState.empty)
+          _glass(
+            p,
+            FeatureStateBanner(
+              stateLabel: 'API',
+              message:
+                  'API repond mais aucune donnee pour $_apiMonth ($_apiCurrency).',
+              icon: Icons.inbox_outlined,
+            ),
+          ),
+        if (_apiState == _ApiDashboardState.success && _apiSummary != null)
+          _glass(
+            p,
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: Text(
+                    'Source API active: ${_apiSummary!.transactionCount} transactions',
+                    style: TextStyle(color: p.textMuted),
+                  ),
+                ),
+                if (_apiTransactions.isNotEmpty)
+                  Text(
+                    _apiCategoryLabel(_apiTransactions.first.categoryId),
+                    style: TextStyle(
+                      color: p.textStrong,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+              ],
+            ),
+          ),
         const SizedBox(height: 12),
         _glass(
           p,

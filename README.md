@@ -1,47 +1,52 @@
 # SmartBudget
 
-SmartBudget is a Flutter client with a Node.js/Express backend using Firebase Authentication and Firestore.
+SmartBudget est une application mobile/desktop de gestion budgetaire.
+Le projet est compose de deux parties:
+- un frontend Flutter (`lib/`)
+- une API Node.js/Express (`backend/`)
 
-## Project structure
+Le backend utilise Firebase Authentication et Firestore.
 
-- `lib/`: Flutter app
-- `backend/`: Express API
-- `firestore.rules`: Firestore security rules
-- `firestore.indexes.json`: Firestore composite indexes
+## Demarrage rapide
 
-## Run Flutter app
-
-```bash
-flutter pub get
-flutter run
-```
-
-Optional API override:
-
-```bash
-flutter run --dart-define=API_BASE_URL=http://localhost:3000
-```
-
-## Run backend
-
+### 1) Lancer le backend
 ```bash
 cd backend
 npm install
 npm start
 ```
 
-Read backend setup details in `backend/README-BACKEND.md`.
-Read frontend details in `README-FRONTEND.md`.
+### 2) Lancer le frontend Flutter
+```bash
+flutter pub get
+flutter run
+```
 
-## Initialize Firestore data (seed)
+Si tu veux forcer l'URL API:
+```bash
+flutter run --dart-define=API_BASE_URL=http://localhost:3000
+```
 
+## Structure utile du repo
+- `lib/`: ecrans, services, modeles, theme Flutter
+- `backend/`: routes API, validations, scripts de test
+- `firestore.rules`: regles de securite Firestore
+- `firestore.indexes.json`: indexes Firestore
+
+## Documentation detaillee
+- Backend: `backend/README-BACKEND.md`
+- Frontend: `README-FRONTEND.md`
+- Feature Developer (livraison metier): `README-FEATURE-DEVELOPER.md`
+
+## Commandes utiles backend
+
+Initialiser des donnees de test:
 ```bash
 cd backend
 npm run db:init
 ```
 
-## API smoke test with Firebase token
-
+Smoke test API avec un UID Firebase:
 ```bash
 cd backend
 npm run api:smoke -- --uid=<FIREBASE_UID>
