@@ -27,7 +27,7 @@ class ApiClient {
     if (_baseUrlOverride.isNotEmpty) return _baseUrlOverride;
     if (kIsWeb) return 'http://localhost:3000';
     if (defaultTargetPlatform == TargetPlatform.android) {
-      return 'http://10.0.2.2:3000';
+      return 'http://10.73.223.7:3000';
     }
     return 'http://localhost:3000';
   }
@@ -78,7 +78,9 @@ class ApiClient {
   }
 
   static List<Map<String, dynamic>> _extractItemMaps(dynamic source) {
-    final dynamic items = source is Map<String, dynamic> ? source['items'] : null;
+    final dynamic items = source is Map<String, dynamic>
+        ? source['items']
+        : null;
     if (items is! List<dynamic>) return <Map<String, dynamic>>[];
     return items.whereType<Map<String, dynamic>>().toList();
   }
@@ -210,9 +212,9 @@ class ApiClient {
     );
 
     return {
-      'items': _extractItemMaps(data)
-          .map(TransactionModel.fromJson)
-          .toList(growable: false),
+      'items': _extractItemMaps(
+        data,
+      ).map(TransactionModel.fromJson).toList(growable: false),
       'pageInfo': data['pageInfo'] is Map<String, dynamic>
           ? data['pageInfo'] as Map<String, dynamic>
           : <String, dynamic>{},
@@ -312,9 +314,9 @@ class ApiClient {
     );
 
     return {
-      'items': _extractItemMaps(data)
-          .map(CategoryModel.fromJson)
-          .toList(growable: false),
+      'items': _extractItemMaps(
+        data,
+      ).map(CategoryModel.fromJson).toList(growable: false),
       'pageInfo': data['pageInfo'] is Map<String, dynamic>
           ? data['pageInfo'] as Map<String, dynamic>
           : <String, dynamic>{},
@@ -399,11 +401,7 @@ class ApiClient {
   }) {
     return _getJsonMap(
       '/stats/by-category',
-      query: {
-        'month': month,
-        'currency': currency,
-        'type': type,
-      },
+      query: {'month': month, 'currency': currency, 'type': type},
       authorized: true,
     );
   }

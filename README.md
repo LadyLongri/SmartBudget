@@ -31,6 +31,7 @@ npm start
 ```
 
 Read backend setup details in `backend/README-BACKEND.md`.
+Read frontend details in `README-FRONTEND.md`.
 
 ## Initialize Firestore data (seed)
 

@@ -94,6 +94,10 @@ service cloud.firestore {
         && validCategory(request.resource.data);
     }
 
+    match /users/{userId}/smartbudget/{docId} {
+      allow read, write: if isOwner(userId);
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

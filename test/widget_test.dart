@@ -2,13 +2,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:smartbudget/main.dart';
 
 void main() {
-  testWidgets('renders CRUD auth actions', (WidgetTester tester) async {
-    await tester.pumpWidget(const SmartBudgetApp());
+  testWidgets('renders welcome after splash', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      const SmartBudgetApp(splashDelay: Duration(milliseconds: 10)),
+    );
+    await tester.pump(const Duration(milliseconds: 20));
+    await tester.pumpAndSettle();
 
-    expect(find.text('SmartBudget CRUD'), findsOneWidget);
-    expect(find.text('Login'), findsOneWidget);
-    expect(find.text('Register'), findsOneWidget);
-    expect(find.text('Tester /health'), findsOneWidget);
-    expect(find.text('Tester /me'), findsOneWidget);
+    expect(find.text('SB'), findsWidgets);
+    expect(find.text('Connexion'), findsOneWidget);
+    expect(find.text("Entrer dans l'application"), findsOneWidget);
   });
 }
